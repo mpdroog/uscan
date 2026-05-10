@@ -1,0 +1,34 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+uscan
+
+# Debug symbols
+*.dSYM/
+
+# SQLite database
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+log.txt
+
+# Config/state
+.build_mode
+imgui.ini
+
+# Test binaries
+tests/test_runner
+tests/test_integration_runner
+tests/test_threading
+tests/test_thread_safety
+tests/mock_iqfeed_server
+
+# Vendor binaries
+vendor/imgui/examples/libs/glfw/lib-vc2010-32/
+vendor/imgui/examples/libs/glfw/lib-vc2010-64/
+vendor/imgui/misc/fonts/*.ttf
