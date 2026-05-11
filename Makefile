@@ -140,7 +140,7 @@ distclean: clean
 run: all
 	./$(TARGET)
 
-# Unit tests
+# Unit tests (always run with TSAN for race detection)
 TEST_SRC := tests/test_main.cpp tests/test_types.cpp tests/test_symbol_db.cpp tests/test_iqfeed_parsing.cpp tests/test_scanner.cpp tests/test_async_nonblocking.cpp
 TEST_OBJ := $(TEST_SRC:.cpp=.o)
 TEST_APP_OBJ := src/symbol_db.o src/iqfeed_client.o src/scanner.o src/db_worker.o
@@ -148,32 +148,44 @@ TEST_APP_OBJ := src/symbol_db.o src/iqfeed_client.o src/scanner.o src/db_worker.
 tests/%.o: tests/%.cpp
 	$(CXX) $(CXXFLAGS_APP) -Itests -c $< -o $@
 
-test: vendor $(TEST_OBJ) $(TEST_APP_OBJ)
-	$(CXX) $(TEST_OBJ) $(TEST_APP_OBJ) -o tests/test_runner $(LDFLAGS)
+# Internal target for building tests (used by test target)
+tests/test_runner: vendor $(TEST_OBJ) $(TEST_APP_OBJ)
+	$(CXX) $(TEST_OBJ) $(TEST_APP_OBJ) -o $@ $(LDFLAGS)
+
+test:
+	$(MAKE) clean
+	TSAN=1 $(MAKE) tests/test_runner
 	./tests/test_runner
 
-# Integration tests with mock IQFeed server
+# Integration tests with mock IQFeed server (always run with TSAN)
+INTEGRATION_OBJ := tests/test_main.o tests/test_iqfeed_integration.o
+INTEGRATION_APP_OBJ := src/symbol_db.o src/iqfeed_client.o src/scanner.o src/db_worker.o
+
+tests/test_integration_runner: $(INTEGRATION_OBJ) $(INTEGRATION_APP_OBJ)
+	$(CXX) $(INTEGRATION_OBJ) $(INTEGRATION_APP_OBJ) -o $@ $(LDFLAGS)
+
+tests/mock_iqfeed_server: tests/mock_iqfeed_server.go
+	go build -o $@ $<
+
 test-integration:
+	$(MAKE) clean
+	TSAN=1 $(MAKE) tests/test_integration_runner tests/mock_iqfeed_server
 	./tests/run_integration_tests.sh
 
-# Thread safety tests with ThreadSanitizer
-test-tsan:
-	@echo "Building with ThreadSanitizer..."
+# Thread safety stress tests (always run with TSAN)
+tests/test_thread_safety: tests/test_thread_safety.cpp src/iqfeed_client.o src/symbol_db.o src/scanner.o src/db_worker.o
+	$(CXX) $(CXXFLAGS_APP) -Wno-unused-result tests/test_thread_safety.cpp \
+		src/iqfeed_client.o src/symbol_db.o src/scanner.o src/db_worker.o \
+		-o $@ $(LDFLAGS)
+
+test-threading:
 	$(MAKE) clean
-	TSAN=1 $(MAKE) test-threading
-	@echo ""
-	@echo "Running thread safety tests with ThreadSanitizer..."
+	TSAN=1 $(MAKE) tests/test_thread_safety
 	@echo "TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1:history_size=7"
 	TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1:history_size=7" ./tests/test_thread_safety
 
-# Build and run threading tests (use TSAN=1 for sanitizer)
-test-threading: tests/test_thread_safety.cpp src/iqfeed_client.o src/symbol_db.o src/scanner.o src/db_worker.o
-	$(CXX) $(CXXFLAGS_APP) -Wno-unused-result tests/test_thread_safety.cpp \
-		src/iqfeed_client.o src/symbol_db.o src/scanner.o src/db_worker.o \
-		-o tests/test_thread_safety $(LDFLAGS)
-
-# Run all tests with sanitizers
-test-all: test test-integration test-tsan
+# Run all tests
+test-all: test test-integration test-threading
 	@echo ""
 	@echo "All tests passed!"
 

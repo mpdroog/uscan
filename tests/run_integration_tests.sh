@@ -54,21 +54,9 @@ wait_for_port() {
 
 cd "$PROJECT_DIR"
 
-# Build everything
+# Build test runner and mock server using Makefile (inherits TSAN/DEBUG flags)
 echo "Building..."
-make -j4 vendor 2>/dev/null || true
-make -j4 tests/test_main.o tests/test_iqfeed_integration.o \
-    src/symbol_db.o src/iqfeed_client.o src/scanner.o src/db_worker.o 2>&1 | grep -v "^clang" || true
-
-echo "Linking test runner..."
-clang++ tests/test_main.o tests/test_iqfeed_integration.o \
-    src/symbol_db.o src/iqfeed_client.o src/scanner.o src/db_worker.o \
-    -o tests/test_integration_runner \
-    -flto -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo \
-    -L/usr/local/lib -lglfw -lsqlite3 2>&1
-
-echo "Building mock server..."
-go build -o tests/mock_iqfeed_server tests/mock_iqfeed_server.go
+make tests/test_integration_runner tests/mock_iqfeed_server
 
 echo ""
 echo "Starting mock IQFeed server on ports $USCAN_TEST_L1_PORT and $USCAN_TEST_LOOKUP_PORT..."

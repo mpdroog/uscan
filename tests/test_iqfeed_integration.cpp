@@ -1,6 +1,7 @@
 #include "test_framework.hpp"
 #include "iqfeed_client.hpp"
 #include "types.hpp"
+#include <atomic>
 #include <cstdlib>
 #include <unistd.h>
 #include <signal.h>
@@ -588,11 +589,11 @@ TEST(Integration_symbol_search) {
     });
 
     std::vector<SymbolInfo> search_results;
-    bool search_complete = false;
+    std::atomic<bool> search_complete{false};
 
     client.set_symbol_search_callback([&](const std::vector<SymbolInfo>& symbols) {
         search_results = symbols;
-        search_complete = true;
+        search_complete.store(true, std::memory_order_release);
     });
 
     result = client.request_symbol_search();
@@ -601,7 +602,7 @@ TEST(Integration_symbol_search) {
     // Wait for search to complete
     bool completed = wait_for([&]() {
         client.process();
-        return search_complete;
+        return search_complete.load(std::memory_order_acquire);
     }, 10000);
 
     ASSERT_TRUE(completed);
