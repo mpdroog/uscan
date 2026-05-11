@@ -407,16 +407,11 @@ void Scanner::on_symbols_saved(bool success, const std::string& error) {
 }
 
 void Scanner::attempt_reconnect() {
-    // Check if we've exceeded max attempts
-    if (reconnect_attempt_ >= MAX_RECONNECT_ATTEMPTS) {
-        // Stop trying - user can manually refresh
-        log_warn("Scanner: Max reconnect attempts (%d) reached, giving up", MAX_RECONNECT_ATTEMPTS);
-        return;
-    }
-
     // Calculate delay with exponential backoff: base * 2^attempt, capped at max
+    // Cap attempt at 5 to prevent integer overflow in bit shift (1 << 5 = 32)
+    const int capped_attempt = std::min(reconnect_attempt_, MAX_RECONNECT_ATTEMPTS);
     const int delay_ms = std::min(
-        BASE_RECONNECT_DELAY_MS * (1 << reconnect_attempt_),
+        BASE_RECONNECT_DELAY_MS * (1 << capped_attempt),
         MAX_RECONNECT_DELAY_MS
     );
 
@@ -431,8 +426,8 @@ void Scanner::attempt_reconnect() {
     }
 
     reconnect_attempt_++;
-    log_verbose("Scanner: Attempting reconnect (attempt %d/%d, delay was %dms)",
-                reconnect_attempt_, MAX_RECONNECT_ATTEMPTS, delay_ms);
+    log_verbose("Scanner: Attempting reconnect (attempt %d, delay was %dms)",
+                reconnect_attempt_, delay_ms);
 
     // Disconnect cleanly first
     if (client_) {
