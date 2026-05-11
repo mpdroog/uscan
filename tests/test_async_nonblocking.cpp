@@ -162,7 +162,7 @@ TEST(async_db_save_symbols_async) {
 
     // Wait for completion (max 10 seconds)
     for (int i = 0; i < 100 && !completed; i++) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        uscan::safe_sleep_ms(100);
     }
 
     // Should eventually complete
@@ -215,7 +215,7 @@ TEST(async_db_load_symbols_async) {
 
     // Wait for completion (max 5 seconds)
     for (int i = 0; i < 50 && !completed; i++) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        uscan::safe_sleep_ms(100);
     }
 
     // Should eventually complete

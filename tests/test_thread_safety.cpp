@@ -1,4 +1,6 @@
 #include "../src/iqfeed_client.hpp"
+#include "../src/symbol_db.hpp"
+#include "../src/db_worker.hpp"
 #include "test_framework.hpp"
 #include <thread>
 #include <chrono>
@@ -41,14 +43,14 @@ TEST(callback_race_on_disconnect) {
 
     client.set_symbol_search_callback([&](const std::vector<SymbolInfo>& symbols) {
         callback_running = true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        uscan::safe_sleep_ms(100);
         callback_count++;
         callback_running = false;
     });
 
     client.set_incremental_save_callback([&](const std::vector<SymbolInfo>& symbols) {
         callback_running = true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        uscan::safe_sleep_ms(100);
         callback_count++;
         callback_running = false;
     });
@@ -56,7 +58,7 @@ TEST(callback_race_on_disconnect) {
     // Try to trigger race: disconnect while callback might be running
     for (int i = 0; i < 10; i++) {
         client.connect();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        uscan::safe_sleep_ms(10);
         client.disconnect();
 
         // Ensure no callback is running after disconnect
@@ -88,7 +90,7 @@ TEST(lock_free_counter_stress) {
     }
 
     // Let them read for a bit
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    uscan::safe_sleep_ms(100);
     stop = true;
 
     for (auto& t : readers) {
@@ -144,12 +146,12 @@ TEST(set_callbacks_during_search) {
     std::thread searcher([&]() {
         while (!stop) {
             client.request_symbol_search();
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            uscan::safe_sleep_ms(10);
         }
     });
 
     // Let them race for 200ms
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    uscan::safe_sleep_ms(200);
     stop = true;
 
     setter.join();
@@ -181,7 +183,7 @@ TEST(callback_cleared_before_invocation) {
         client.request_symbol_search();
 
         // Race: disconnect while callback might fire
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        uscan::safe_sleep_ms(5);
         client.disconnect();
     }
 
@@ -226,7 +228,7 @@ TEST(background_thread_data_race) {
     client.request_symbol_search();
 
     // Give it time to receive some symbols (if connection works)
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    uscan::safe_sleep_ms(500);
 
     client.disconnect();
 
@@ -244,7 +246,7 @@ TEST(destroy_during_background_thread) {
         client->request_symbol_search();
 
         // Brief delay to let thread start
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        uscan::safe_sleep_ms(10);
 
         // Destroy while thread might be running
         delete client;
@@ -266,7 +268,7 @@ TEST(multiple_concurrent_clients) {
             client.connect();
             client.request_symbol_search();
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(50 + i * 10));
+            uscan::safe_sleep_ms(50 + i * 10);
 
             client.disconnect();
         });
@@ -331,7 +333,7 @@ TEST(no_deadlock_on_mutex_acquisition) {
     std::thread t1([&]() {
         while (!stop) {
             client.set_symbol_search_callback([](const std::vector<SymbolInfo>&) {});
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            uscan::safe_sleep_us(100);
         }
     });
 
@@ -340,7 +342,7 @@ TEST(no_deadlock_on_mutex_acquisition) {
         client.connect();
         while (!stop) {
             client.request_symbol_search();
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            uscan::safe_sleep_ms(10);
         }
     });
 
@@ -353,7 +355,7 @@ TEST(no_deadlock_on_mutex_acquisition) {
     });
 
     // Run for 200ms - should not deadlock
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    uscan::safe_sleep_ms(200);
     stop = true;
 
     t1.join();
@@ -389,7 +391,8 @@ TEST(shutdown_during_symbol_search) {
     // 3. User closes window → shutdown() called
     // 4. Verify clean shutdown with no crashes or use-after-free
 
-    Config config = test::get_test_config();
+    Config config;
+    config.iqfeed_host = "127.0.0.1";
     config.db_path = "/tmp/test_shutdown_race.db";
     std::remove(config.db_path.c_str());
 
@@ -408,7 +411,8 @@ TEST(shutdown_during_symbol_search) {
     client.set_incremental_save_callback([&](const std::vector<SymbolInfo>& batch) {
         // This callback accesses db_worker - would crash if db_worker destroyed
         if (db_worker_destroyed) {
-            FAIL("Incremental save callback invoked after db_worker destroyed!");
+            std::fprintf(stderr, "FATAL: Incremental save callback invoked after db_worker destroyed!\n");
+            std::abort();
         }
         worker.enqueue_save(batch, [&](bool success, const std::string& error) {
             if (!success) {
@@ -426,7 +430,7 @@ TEST(shutdown_during_symbol_search) {
     ASSERT_TRUE(client.request_symbol_search().ok());
 
     // Let background thread start receiving symbols
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    uscan::safe_sleep_ms(100);
 
     // Simulate immediate window close (shutdown while symbols still loading)
     // CORRECT shutdown order (after fix):
@@ -451,7 +455,8 @@ TEST(shutdown_during_symbol_search) {
 // Test 14: DB worker drains queue on shutdown
 TEST(db_worker_drains_queue_on_shutdown) {
     // Verify DBWorker processes all pending requests before exiting
-    Config config = test::get_test_config();
+    Config config;
+    config.iqfeed_host = "127.0.0.1";
     config.db_path = "/tmp/test_db_drain.db";
     std::remove(config.db_path.c_str());
 
@@ -471,7 +476,10 @@ TEST(db_worker_drains_queue_on_shutdown) {
         batch.push_back(info);
 
         worker.enqueue_save(batch, [&](bool success, const std::string& error) {
-            ASSERT_TRUE(success);
+            if (!success) {
+                std::fprintf(stderr, "Save failed: %s\n", error.c_str());
+                std::abort();
+            }
             saves_completed++;
         });
     }

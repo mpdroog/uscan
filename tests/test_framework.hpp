@@ -45,6 +45,12 @@ inline int& failed_count() {
     }(); \
     static bool test_##name()
 
+#define FAIL(msg) \
+    do { \
+        std::fprintf(stderr, "  FAILED: %s at %s:%d\n", (msg), __FILE__, __LINE__); \
+        return false; \
+    } while (0)
+
 #define ASSERT_TRUE(expr) \
     do { \
         if (!(expr)) { \

@@ -70,8 +70,39 @@
 #endif
 
 #include <mutex>
+#include <thread>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 
 namespace uscan {
+
+// Safe sleep wrappers - crash immediately if duration <= 0 to prevent busy-wait bugs
+// std::this_thread::sleep_for(0) doesn't actually sleep, causing tight loops that consume 100% CPU
+
+inline void safe_sleep_us(int us) {
+    if (us <= 0) {
+        std::fprintf(stderr, "FATAL: safe_sleep_us(%d) - zero/negative duration would cause busy wait\n", us);
+        std::abort();
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(us));
+}
+
+inline void safe_sleep_ms(int ms) {
+    if (ms <= 0) {
+        std::fprintf(stderr, "FATAL: safe_sleep_ms(%d) - zero/negative duration would cause busy wait\n", ms);
+        std::abort();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+inline void safe_sleep_s(int s) {
+    if (s <= 0) {
+        std::fprintf(stderr, "FATAL: safe_sleep_s(%d) - zero/negative duration would cause busy wait\n", s);
+        std::abort();
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(s));
+}
 
 // Mutex wrapper with thread safety annotations
 class CAPABILITY("mutex") Mutex {

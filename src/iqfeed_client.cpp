@@ -1333,7 +1333,7 @@ void IQFeedClient::symbol_search_worker() {
 
         // Brief sleep only when no data was available (avoid busy-wait)
         if (!data_read && searching_symbols_ && state_ == ConnectionState::Connected) {
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            safe_sleep_us(100);
         }
     }
 

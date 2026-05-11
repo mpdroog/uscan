@@ -40,7 +40,7 @@ TEST(rapid_init_shutdown) {
 
         Scanner scanner(std::move(config));
         scanner.initialize();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        uscan::safe_sleep_ms(10);
         scanner.shutdown();
     }
 
@@ -56,7 +56,7 @@ TEST(shutdown_during_symbol_search) {
     Scanner scanner(std::move(config));
     scanner.initialize();
     scanner.refresh_symbols();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    uscan::safe_sleep_ms(50);
     scanner.shutdown();
 
     return true;
@@ -80,7 +80,7 @@ TEST(concurrent_scanners) {
         cfg.iqfeed_host = "127.0.0.1";
         Scanner scanner(std::move(cfg));
         scanner.initialize();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        uscan::safe_sleep_ms(100);
         scanner.shutdown();
     });
 
@@ -90,7 +90,7 @@ TEST(concurrent_scanners) {
         cfg.iqfeed_host = "127.0.0.1";
         Scanner scanner(std::move(cfg));
         scanner.initialize();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        uscan::safe_sleep_ms(100);
         scanner.shutdown();
     });
 

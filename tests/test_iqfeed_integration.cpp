@@ -140,7 +140,7 @@ static bool start_mock_server() {
             break;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        uscan::safe_sleep_ms(100);
     }
 
     if (!server_ready) {
@@ -177,7 +177,7 @@ static void stop_mock_server() {
                 exited = true;
                 break;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            uscan::safe_sleep_ms(100);
         }
 
         // If still running after timeout, force kill
@@ -189,7 +189,7 @@ static void stop_mock_server() {
 
         mock_server_pid = -1;
         // Wait longer for ports to be released
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        uscan::safe_sleep_s(1);
     }
 }
 
@@ -202,7 +202,7 @@ static bool wait_for(Func condition, int timeout_ms = 5000) {
         if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() > timeout_ms) {
             return false;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        uscan::safe_sleep_ms(10);
     }
     return true;
 }
@@ -310,7 +310,7 @@ TEST(Integration_connect_with_server_not_running) {
             client.state() == ConnectionState::Disconnected) {
             break;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        uscan::safe_sleep_ms(100);
     }
 
     // Should either fail to connect or detect error state
@@ -501,11 +501,11 @@ TEST(Integration_quote_updates) {
     double initial_price = client.quotes().at("AAPL").last_price;
 
     // Wait for at least one update (server sends updates every 1 second)
-    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    uscan::safe_sleep_ms(1500);
 
     for (int i = 0; i < 20; ++i) {
         client.process();
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        uscan::safe_sleep_ms(50);
     }
 
     double updated_price = client.quotes().at("AAPL").last_price;
@@ -720,11 +720,11 @@ TEST(Integration_message_count_tracking) {
     ASSERT_TRUE(result.ok());
 
     // Wait for messages
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    uscan::safe_sleep_ms(500);
 
     for (int i = 0; i < 10; ++i) {
         client.process();
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        uscan::safe_sleep_ms(50);
     }
 
     std::size_t final_count = client.message_count();
