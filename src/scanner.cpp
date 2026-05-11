@@ -62,20 +62,42 @@ Result<void> Scanner::initialize() {
 }
 
 void Scanner::shutdown() {
-    // CRITICAL: Disconnect client FIRST to stop background threads
-    // and clear callbacks before touching DB resources
+    // =========================================================================
+    // SHUTDOWN ORDERING INVARIANT - DO NOT REORDER
+    // =========================================================================
+    // The shutdown sequence MUST follow this order to prevent use-after-free:
+    //
+    // 1. Disconnect IQFeed client FIRST
+    //    - Stops background symbol search thread
+    //    - Clears all callbacks (prevents callbacks from accessing Scanner)
+    //    - Closes sockets (makes recv() fail immediately in background thread)
+    //    - Joins the background thread (blocks until it exits)
+    //
+    // 2. Stop DB worker SECOND
+    //    - At this point, no callbacks can enqueue new work
+    //    - Drains the work queue (processes pending saves)
+    //    - Joins the DB worker thread
+    //
+    // 3. Flush and close database LAST
+    //    - Safe because no threads are accessing the DB
+    //
+    // VIOLATION: If DB is closed before client disconnect, callbacks from
+    // the background thread may try to save to a closed database.
+    // =========================================================================
+
+    // Step 1: Disconnect client to stop background threads and clear callbacks
     if (client_) {
         client_->unwatch_all();
         client_->disconnect();  // Joins background thread, clears callbacks
     }
 
-    // Now safe to stop DB worker (no more callbacks can enqueue saves)
+    // Step 2: Stop DB worker (no more callbacks can enqueue saves)
     if (db_worker_) {
         db_worker_->stop();  // Drains queue and joins thread
         db_worker_.reset();
     }
 
-    // Flush any remaining price updates
+    // Step 3: Flush any remaining price updates and close database
     if (db_) {
         auto flush_result = db_->flush_price_updates();
         if (flush_result.failed()) {

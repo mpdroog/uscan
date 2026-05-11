@@ -122,8 +122,12 @@ Result<void> SymbolDB::save_symbols(const std::vector<SymbolInfo>& symbols) {
     rc = sqlite3_prepare_v2(db_, meta_sql, -1, &stmt, nullptr);
     if (rc == SQLITE_OK) {
         sqlite3_bind_int64(stmt, 1, now);
-        sqlite3_step(stmt);
+        rc = sqlite3_step(stmt);
         sqlite3_finalize(stmt);
+        if (rc != SQLITE_DONE) {
+            log_warn("Failed to update metadata timestamp: %s", sqlite3_errmsg(db_));
+            // Non-fatal: continue with commit
+        }
     }
 
     return exec("COMMIT");

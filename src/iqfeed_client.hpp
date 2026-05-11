@@ -102,9 +102,9 @@ private:
     std::string recv_buffer_;     // Buffer for Level 1 messages
     std::string lookup_buffer_;   // Buffer for Lookup port messages
 
-    std::unordered_map<std::string, Quote> quotes_;
+    std::unordered_map<std::string, Quote> quotes_ GUARDED_BY(quotes_mutex_);
     std::vector<std::string> watched_symbols_;
-    std::mutex quotes_mutex_;
+    mutable Mutex quotes_mutex_;
 
     QuoteCallback quote_callback_;
     RegionalQuoteCallback regional_quote_callback_;
@@ -114,9 +114,9 @@ private:
     std::atomic<std::size_t> message_count_{0};
 
     // Dynamic field mapping - populated from S,CURRENT UPDATE FIELDNAMES
-    std::unordered_map<std::string, std::size_t> field_index_map_;
-    mutable std::mutex field_map_mutex_;
-    std::atomic<bool> field_map_initialized_{false};
+    std::unordered_map<std::string, std::size_t> field_index_map_ GUARDED_BY(field_map_mutex_);
+    mutable Mutex field_map_mutex_;
+    bool field_map_initialized_ GUARDED_BY(field_map_mutex_) = false;
 
     // Protocol state
     std::string protocol_version_;

@@ -44,8 +44,13 @@ static bool try_connect(int port, int timeout_ms) {
 
     // Set non-blocking
     int flags = fcntl(fd, F_GETFL, 0);
-    if (flags != -1) {
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    if (flags == -1) {
+        close(fd);
+        return false;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        close(fd);
+        return false;
     }
 
     sockaddr_in addr{};

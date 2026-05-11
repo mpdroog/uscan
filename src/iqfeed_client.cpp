@@ -349,7 +349,7 @@ Result<void> IQFeedClient::watch(const std::string& symbol) {
 
     // Initialize quote entry
     {
-        std::lock_guard<std::mutex> lock(quotes_mutex_);
+        MutexLock lock(quotes_mutex_);
         if (quotes_.find(symbol) == quotes_.end()) {
             quotes_[symbol] = Quote(symbol);
         }
@@ -746,7 +746,7 @@ void IQFeedClient::parse_fundamental(const std::vector<std::string>& fields) {
 
     const std::string& symbol = fields[1];
 
-    std::lock_guard<std::mutex> lock(quotes_mutex_);
+    MutexLock lock(quotes_mutex_);
     auto it = quotes_.find(symbol);
     if (it == quotes_.end()) return;
 
@@ -781,7 +781,7 @@ void IQFeedClient::parse_summary(const std::vector<std::string>& fields) {
 
     const std::string& symbol = fields[1];
 
-    std::lock_guard<std::mutex> lock(quotes_mutex_);
+    MutexLock lock(quotes_mutex_);
     auto it = quotes_.find(symbol);
     if (it == quotes_.end()) return;
 
@@ -867,7 +867,7 @@ void IQFeedClient::parse_system(const std::vector<std::string>& fields) {
 
     // Dynamic field mapping: S,CURRENT UPDATE FIELDNAMES,Symbol,Bid,Ask,...
     if (msg_type == "CURRENT UPDATE FIELDNAMES") {
-        std::lock_guard<std::mutex> lock(field_map_mutex_);
+        MutexLock lock(field_map_mutex_);
         field_index_map_.clear();
         // Fields start at index 2 (after "S" and "CURRENT UPDATE FIELDNAMES")
         // Note: Symbol is always field 0 in the actual message, but here we map
@@ -1003,10 +1003,11 @@ int64_t IQFeedClient::parse_int64(const std::string& s) noexcept {
 }
 
 std::size_t IQFeedClient::get_field_index(const char* field_name, std::size_t fallback) const {
+    // Acquire lock BEFORE checking flag to avoid check-then-use race
+    MutexLock lock(field_map_mutex_);
     if (!field_map_initialized_) {
         return fallback;
     }
-    std::lock_guard<std::mutex> lock(field_map_mutex_);
     auto it = field_index_map_.find(field_name);
     return (it != field_index_map_.end()) ? it->second : fallback;
 }

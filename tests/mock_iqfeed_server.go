@@ -39,6 +39,10 @@ type MockIQFeedServer struct {
 	watched map[net.Conn]map[string]bool
 	watchMu sync.Mutex
 
+	// Per-connection cancel channels for immediate cleanup
+	connCancel map[net.Conn]chan struct{}
+	cancelMu   sync.Mutex
+
 	// Symbol database for SBF queries
 	symbols []SymbolData
 
@@ -54,12 +58,25 @@ type SymbolData struct {
 	Type     int // 1=equity, 2=index, etc
 }
 
+// safeSetField sets a field in a slice, growing it if necessary
+func safeSetField(fields []string, index int, value string) []string {
+	if index >= len(fields) {
+		// Grow the slice to accommodate the index
+		newFields := make([]string, index+1)
+		copy(newFields, fields)
+		fields = newFields
+	}
+	fields[index] = value
+	return fields
+}
+
 // NewMockIQFeedServer creates a new mock server
 func NewMockIQFeedServer(l1Port, lookupPort int) *MockIQFeedServer {
 	server := &MockIQFeedServer{
 		l1Port:     l1Port,
 		lookupPort: lookupPort,
 		watched:    make(map[net.Conn]map[string]bool),
+		connCancel: make(map[net.Conn]chan struct{}),
 		stopChan:   make(chan struct{}),
 	}
 
@@ -217,7 +234,22 @@ func (s *MockIQFeedServer) acceptLookupConnections() {
 
 func (s *MockIQFeedServer) handleL1Connection(conn net.Conn) {
 	defer s.wg.Done()
+
+	// Create cancel channel for this connection's goroutines
+	cancelChan := make(chan struct{})
+	s.cancelMu.Lock()
+	s.connCancel[conn] = cancelChan
+	s.cancelMu.Unlock()
+
 	defer func() {
+		// Close cancel channel to stop all goroutines for this connection
+		s.cancelMu.Lock()
+		if ch, exists := s.connCancel[conn]; exists {
+			close(ch)
+			delete(s.connCancel, conn)
+		}
+		s.cancelMu.Unlock()
+
 		s.removeL1Conn(conn)
 		if err := conn.Close(); err != nil {
 			log.Printf("error closing L1 connection: %v", err)
@@ -293,8 +325,11 @@ func (s *MockIQFeedServer) handleL1Command(conn net.Conn, cmd string) error {
 		}
 
 		// Start sending periodic timestamps
+		s.cancelMu.Lock()
+		cancelChan := s.connCancel[conn]
+		s.cancelMu.Unlock()
 		s.wg.Add(1)
-		go s.sendTimestamps(conn)
+		go s.sendTimestamps(conn, cancelChan)
 
 	} else if strings.HasPrefix(cmd, "w") {
 		// Watch symbol
@@ -341,8 +376,11 @@ func (s *MockIQFeedServer) handleL1Command(conn net.Conn, cmd string) error {
 		}
 
 		// Start sending updates
+		s.cancelMu.Lock()
+		cancelChan := s.connCancel[conn]
+		s.cancelMu.Unlock()
 		s.wg.Add(1)
-		go s.sendUpdates(conn, symbol)
+		go s.sendUpdates(conn, symbol, cancelChan)
 
 	} else if strings.HasPrefix(cmd, "r") {
 		// Unwatch symbol
@@ -537,7 +575,7 @@ func (s *MockIQFeedServer) sendSummary(conn net.Conn, symbol string) error {
 	return s.send(conn, msg)
 }
 
-func (s *MockIQFeedServer) sendUpdates(conn net.Conn, symbol string) {
+func (s *MockIQFeedServer) sendUpdates(conn net.Conn, symbol string, connCancel <-chan struct{}) {
 	defer s.wg.Done()
 
 	// Send periodic quote updates while symbol is watched
@@ -552,6 +590,9 @@ func (s *MockIQFeedServer) sendUpdates(conn net.Conn, symbol string) {
 	for {
 		select {
 		case <-s.stopChan:
+			return
+		case <-connCancel:
+			// Connection closed, stop immediately
 			return
 		case <-timeout:
 			log.Printf("sendUpdates timeout for %s", symbol)
@@ -603,7 +644,7 @@ func (s *MockIQFeedServer) sendUpdates(conn net.Conn, symbol string) {
 	}
 }
 
-func (s *MockIQFeedServer) sendTimestamps(conn net.Conn) {
+func (s *MockIQFeedServer) sendTimestamps(conn net.Conn, connCancel <-chan struct{}) {
 	defer s.wg.Done()
 
 	// Send periodic timestamp heartbeats
@@ -616,6 +657,9 @@ func (s *MockIQFeedServer) sendTimestamps(conn net.Conn) {
 	for {
 		select {
 		case <-s.stopChan:
+			return
+		case <-connCancel:
+			// Connection closed, stop immediately
 			return
 		case <-timeout:
 			return
