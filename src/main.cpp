@@ -24,11 +24,18 @@ void glfw_error_callback(int error, const char* description) {
     std::fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
 
-// Format large numbers with K/M suffixes
+// Format large numbers with K/M/B/T suffixes
+// Handles values up to 10^15 safely (double has ~15 digits of precision)
 USCAN_NODISCARD const char* format_volume(int64_t vol, char* buf, std::size_t buf_size) {
-    if (vol >= 1'000'000) {
+    if (vol >= 1'000'000'000'000LL) {
+        // Trillions - for extremely large values
+        std::snprintf(buf, buf_size, "%.2fT", static_cast<double>(vol) / 1'000'000'000'000.0);
+    } else if (vol >= 1'000'000'000LL) {
+        // Billions
+        std::snprintf(buf, buf_size, "%.2fB", static_cast<double>(vol) / 1'000'000'000.0);
+    } else if (vol >= 1'000'000LL) {
         std::snprintf(buf, buf_size, "%.2fM", static_cast<double>(vol) / 1'000'000.0);
-    } else if (vol >= 1'000) {
+    } else if (vol >= 1'000LL) {
         std::snprintf(buf, buf_size, "%.1fK", static_cast<double>(vol) / 1'000.0);
     } else {
         std::snprintf(buf, buf_size, "%" PRId64, vol);

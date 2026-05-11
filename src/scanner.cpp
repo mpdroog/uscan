@@ -110,7 +110,13 @@ void Scanner::shutdown() {
 }
 
 void Scanner::update() {
-    if (state_ == ScannerState::Error || state_ == ScannerState::Idle) {
+    if (state_ == ScannerState::Idle) {
+        return;
+    }
+
+    // Handle error state with automatic reconnection
+    if (state_ == ScannerState::Error) {
+        attempt_reconnect();
         return;
     }
 
@@ -123,7 +129,8 @@ void Scanner::update() {
             last_error_ = client_->last_error();
             state_ = ScannerState::Error;
             progress_ = Progress();
-            log_warn("Scanner: Client error detected: %s", last_error_.c_str());
+            last_error_time_ = std::chrono::steady_clock::now();
+            log_warn("Scanner: Client error detected: %s (will attempt reconnect)", last_error_.c_str());
             return;
         }
 
@@ -397,6 +404,68 @@ void Scanner::on_symbols_saved(bool success, const std::string& error) {
         last_error_ = "Warning: Failed to save symbols: " + error;
         // Non-fatal - continue anyway
     }
+}
+
+void Scanner::attempt_reconnect() {
+    // Check if we've exceeded max attempts
+    if (reconnect_attempt_ >= MAX_RECONNECT_ATTEMPTS) {
+        // Stop trying - user can manually refresh
+        log_warn("Scanner: Max reconnect attempts (%d) reached, giving up", MAX_RECONNECT_ATTEMPTS);
+        return;
+    }
+
+    // Calculate delay with exponential backoff: base * 2^attempt, capped at max
+    const int delay_ms = std::min(
+        BASE_RECONNECT_DELAY_MS * (1 << reconnect_attempt_),
+        MAX_RECONNECT_DELAY_MS
+    );
+
+    // Check if enough time has passed since last error
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - last_error_time_).count();
+
+    if (elapsed < delay_ms) {
+        // Not ready to retry yet
+        return;
+    }
+
+    reconnect_attempt_++;
+    log_verbose("Scanner: Attempting reconnect (attempt %d/%d, delay was %dms)",
+                reconnect_attempt_, MAX_RECONNECT_ATTEMPTS, delay_ms);
+
+    // Disconnect cleanly first
+    if (client_) {
+        client_->disconnect();
+    }
+
+    // Try to reconnect
+    state_ = ScannerState::Connecting;
+    progress_ = Progress("Reconnecting to IQFeed", 1, 4);
+
+    auto connect_result = client_->connect();
+    if (connect_result.failed()) {
+        last_error_ = connect_result.error;
+        state_ = ScannerState::Error;
+        progress_ = Progress();
+        last_error_time_ = now;  // Reset timer for next retry
+        log_warn("Scanner: Reconnect failed: %s", last_error_.c_str());
+        return;
+    }
+
+    // Reconnected successfully - reset state and resume
+    log_verbose("Scanner: Reconnected successfully");
+    reconnect_attempt_ = 0;  // Reset retry counter
+
+    // Re-register quote callback
+    client_->set_quote_callback([this](const Quote& q) {
+        process_quote(q);
+    });
+
+    // Resume operation - go back to subscribing
+    state_ = ScannerState::Subscribing;
+    subscribe_index_ = 0;
+    progress_ = Progress("Resubscribing to symbols", 4, 4);
 }
 
 } // namespace uscan

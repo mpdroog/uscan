@@ -121,6 +121,7 @@ private:
     // Protocol state
     std::string protocol_version_;
     std::atomic<bool> protocol_validated_{false};
+    std::atomic<bool> lookup_protocol_validated_{false};
 
     // SBF (Symbol By Filter) search state - thread-safe
     Mutex callback_mutex_;  // Protects callbacks from being cleared during invocation

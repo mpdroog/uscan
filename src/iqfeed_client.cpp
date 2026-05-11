@@ -195,18 +195,19 @@ Result<void> IQFeedClient::connect() {
     }
 
     // Wait for protocol validation from server
+    // Note: read_data() already uses poll() with timeout, so we don't need extra sleep
     {
         auto start = std::chrono::steady_clock::now();
         while (!protocol_validated_) {
+            // read_data() blocks in poll() for up to POLL_TIMEOUT_MS - no busy wait
             if (!read_data()) {
-                // read_data() returns false if no data available or on error
                 // Check if an error occurred (state would be set to Error or Disconnected)
                 if (state_ == ConnectionState::Error || state_ == ConnectionState::Disconnected) {
                     log_warn("Connection lost while waiting for protocol validation");
                     disconnect();
                     return Result<void>::failure(last_error_.empty() ? "Connection lost during protocol validation" : last_error_);
                 }
-                // No data yet, continue waiting
+                // No data yet, poll() already waited - check timeout
             }
 
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -216,8 +217,7 @@ Result<void> IQFeedClient::connect() {
                 disconnect();
                 return Result<void>::failure(last_error_);
             }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            // No sleep needed - poll() in read_data() already provides wait
         }
         log_verbose("Protocol validated: %s", protocol_version_.c_str());
     }
@@ -290,6 +290,58 @@ Result<void> IQFeedClient::connect() {
         state_ = ConnectionState::Error;
         return Result<void>::failure(last_error_);
     }
+
+    // Wait for lookup port protocol validation
+    {
+        auto start = std::chrono::steady_clock::now();
+        while (!lookup_protocol_validated_) {
+            // Read and parse lookup data to get protocol response
+            if (lookup_fd_ >= 0) {
+                struct pollfd pfd{};
+                pfd.fd = lookup_fd_;
+                pfd.events = POLLIN;
+
+                if (poll(&pfd, 1, POLL_TIMEOUT_MS) > 0 && (pfd.revents & POLLIN)) {
+                    char buffer[RECV_BUFFER_SIZE];
+                    const auto bytes_read = recv(lookup_fd_, buffer, sizeof(buffer) - 1, 0);
+                    if (bytes_read > 0) {
+                        buffer[bytes_read] = '\0';
+                        lookup_buffer_ += buffer;
+
+                        // Process complete lines
+                        std::size_t pos;
+                        while ((pos = lookup_buffer_.find('\n')) != std::string::npos) {
+                            std::string line = lookup_buffer_.substr(0, pos);
+                            lookup_buffer_.erase(0, pos + 1);
+                            if (!line.empty() && line.back() == '\r') {
+                                line.pop_back();
+                            }
+                            if (!line.empty()) {
+                                log_verbose("TCP RECV (Lookup init): %s", line.c_str());
+                                parse_lookup_message(line);
+                            }
+                        }
+                    }
+                }
+            }
+
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start).count();
+            if (elapsed > PROTOCOL_TIMEOUT_MS) {
+                last_error_ = "Lookup port protocol validation timeout";
+                close(socket_fd_);
+                close(lookup_fd_);
+                socket_fd_ = -1;
+                lookup_fd_ = -1;
+                state_ = ConnectionState::Error;
+                return Result<void>::failure(last_error_);
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        log_verbose("Lookup port protocol validated");
+    }
+
     log_verbose("Lookup port connected successfully");
 
     state_ = ConnectionState::Connected;
@@ -301,6 +353,10 @@ void IQFeedClient::disconnect() {
     searching_symbols_ = false;
     state_ = ConnectionState::Disconnected;
 
+    // Reset protocol validation flags
+    protocol_validated_ = false;
+    lookup_protocol_validated_ = false;
+
     // Clear callbacks to prevent accessing destroyed scanner (thread-safe)
     {
         MutexLock lock(callback_mutex_);
@@ -309,13 +365,18 @@ void IQFeedClient::disconnect() {
     }
 
     // Close sockets - this makes recv() in background thread fail immediately
+    // Check close() return values for diagnostics (failures are rare but logged)
     if (socket_fd_ >= 0) {
-        close(socket_fd_);
-        socket_fd_ = -1;
+        const int fd = socket_fd_.exchange(-1);
+        if (fd >= 0 && close(fd) < 0) {
+            log_verbose("Warning: close(socket_fd_) failed: %s", strerror(errno));
+        }
     }
     if (lookup_fd_ >= 0) {
-        close(lookup_fd_);
-        lookup_fd_ = -1;
+        const int fd = lookup_fd_.exchange(-1);
+        if (fd >= 0 && close(fd) < 0) {
+            log_verbose("Warning: close(lookup_fd_) failed: %s", strerror(errno));
+        }
     }
 
     // Join thread - should exit immediately since socket closed and flags set
@@ -879,6 +940,19 @@ void IQFeedClient::parse_system(const std::vector<std::string>& fields) {
         }
         field_map_initialized_ = true;
         log_verbose("Field map initialized with %zu fields", field_index_map_.size());
+
+        // Validate critical fields are present - warn if missing
+        // This helps detect IQFeed format changes early
+        static const char* critical_fields[] = {
+            FIELD_BID, FIELD_ASK, FIELD_LAST, FIELD_TOTAL_VOLUME,
+            FIELD_HIGH, FIELD_LOW, FIELD_CLOSE, FIELD_OPEN,
+            FIELD_EXTENDED_TRADE, FIELD_EXTENDED_TRADE_SIZE
+        };
+        for (const char* field : critical_fields) {
+            if (field_index_map_.find(field) == field_index_map_.end()) {
+                log_warn("Critical field '%s' not found in IQFeed fieldnames - using fallback index", field);
+            }
+        }
         return;
     }
 
@@ -1013,6 +1087,13 @@ std::size_t IQFeedClient::get_field_index(const char* field_name, std::size_t fa
 }
 
 void IQFeedClient::parse_lookup_message(const std::string& line) {
+    // Handle protocol confirmation: S,CURRENT PROTOCOL,6.2
+    if (line.rfind("S,CURRENT PROTOCOL,", 0) == 0) {
+        lookup_protocol_validated_ = true;
+        log_verbose("Lookup port protocol validated");
+        return;
+    }
+
     // Check for error messages: E,[Error Text], or E,!SYNTAX_ERROR!,
     if (!line.empty() && line[0] == 'E') {
         const auto fields = split(line, ',');

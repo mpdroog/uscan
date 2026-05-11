@@ -253,3 +253,118 @@ TEST(Quote_all_defaults_zero) {
 
     return true;
 }
+
+// ============================================================================
+// Error Handling Tests
+// ============================================================================
+
+// Test connection to unreachable host fails gracefully
+TEST(IQFeedClient_connect_unreachable_host) {
+    Config config;
+    config.iqfeed_host = "192.0.2.1";  // TEST-NET-1, guaranteed unreachable
+    config.iqfeed_l1_port = 5009;
+    config.iqfeed_hist_port = 9100;
+
+    IQFeedClient client(config);
+
+    auto result = client.connect();
+    // Should fail - unreachable host
+    ASSERT_FALSE(result.ok());
+    // State should be Error
+    ASSERT_EQ(client.state(), ConnectionState::Error);
+    // Error message should be set
+    ASSERT_FALSE(client.last_error().empty());
+
+    return true;
+}
+
+// Test multiple disconnect calls are safe
+TEST(IQFeedClient_multiple_disconnect_safe) {
+    Config config;
+    IQFeedClient client(config);
+
+    // Multiple disconnects should not crash
+    client.disconnect();
+    client.disconnect();
+    client.disconnect();
+
+    ASSERT_EQ(client.state(), ConnectionState::Disconnected);
+    return true;
+}
+
+// Test watch on empty symbol fails
+TEST(IQFeedClient_watch_empty_symbol) {
+    Config config;
+    IQFeedClient client(config);
+
+    // Can't watch when not connected
+    auto result = client.watch("");
+    ASSERT_FALSE(result.ok());
+    return true;
+}
+
+// Test process on disconnected client is safe
+TEST(IQFeedClient_process_when_disconnected) {
+    Config config;
+    IQFeedClient client(config);
+
+    // Should not crash when called on disconnected client
+    client.process();
+    client.process();
+    client.process();
+
+    ASSERT_EQ(client.state(), ConnectionState::Disconnected);
+    return true;
+}
+
+// Test unwatch_all on disconnected client is safe
+TEST(IQFeedClient_unwatch_all_when_disconnected) {
+    Config config;
+    IQFeedClient client(config);
+
+    // Should not crash
+    client.unwatch_all();
+    ASSERT_EQ(client.watched_count(), 0u);
+    return true;
+}
+
+// Test callback setting when disconnected
+TEST(IQFeedClient_set_callbacks_when_disconnected) {
+    Config config;
+    IQFeedClient client(config);
+
+    bool callback_called = false;
+
+    // Setting callbacks should work even when disconnected
+    client.set_quote_callback([&](const Quote&) { callback_called = true; });
+    client.set_regional_quote_callback([&](const RegionalQuote&) {});
+    client.set_trade_correction_callback([&](const TradeCorrection&) {});
+    client.set_news_callback([&](const NewsHeadline&) {});
+    client.set_symbol_limit_callback([&](const std::string&) {});
+    client.set_symbol_search_callback([&](const std::vector<SymbolInfo>&) {});
+    client.set_incremental_save_callback([&](const std::vector<SymbolInfo>&) {});
+
+    // Callback should not have been called
+    ASSERT_FALSE(callback_called);
+    return true;
+}
+
+// Test request_symbol_search when disconnected fails
+TEST(IQFeedClient_symbol_search_when_disconnected) {
+    Config config;
+    IQFeedClient client(config);
+
+    auto result = client.request_symbol_search();
+    ASSERT_FALSE(result.ok());
+    return true;
+}
+
+// Test is_searching_symbols returns false when not searching
+TEST(IQFeedClient_is_searching_false_initially) {
+    Config config;
+    IQFeedClient client(config);
+
+    ASSERT_FALSE(client.is_searching_symbols());
+    ASSERT_EQ(client.symbols_received_count(), 0u);
+    return true;
+}

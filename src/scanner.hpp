@@ -78,6 +78,16 @@ private:
     std::atomic<std::size_t> subscribe_index_{0};
     std::atomic<bool> symbols_loading_{false};
     std::atomic<bool> symbols_saving_{false};
+
+    // Error recovery state
+    std::chrono::steady_clock::time_point last_error_time_;
+    int reconnect_attempt_{0};
+    static constexpr int MAX_RECONNECT_ATTEMPTS = 5;
+    static constexpr int BASE_RECONNECT_DELAY_MS = 1000;  // 1 second
+    static constexpr int MAX_RECONNECT_DELAY_MS = 30000;  // 30 seconds
+
+    // Attempt reconnection after error
+    void attempt_reconnect();
 };
 
 } // namespace uscan
