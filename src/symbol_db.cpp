@@ -313,10 +313,6 @@ void SymbolDB::queue_price_update(const std::string& symbol, double price) {
 }
 
 Result<void> SymbolDB::flush_price_updates() {
-    if (db_ == nullptr) {
-        return Result<void>::failure("Database not open");
-    }
-
     // Move pending updates to local vector (minimize lock time)
     std::vector<PriceUpdate> updates;
     {
@@ -325,8 +321,14 @@ Result<void> SymbolDB::flush_price_updates() {
         pending_updates_.clear();
     }
 
+    // Nothing to flush - success regardless of whether db is open
     if (updates.empty()) {
         return Result<void>::ok_result();
+    }
+
+    // Only need database to be open if we actually have updates to write
+    if (db_ == nullptr) {
+        return Result<void>::failure("Database not open");
     }
 
     log_verbose("SQLite: Flushing %zu batched price updates", updates.size());
