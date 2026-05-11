@@ -92,7 +92,9 @@ func (s *MockIQFeedServer) Start() error {
 	// Start Lookup port (symbol search)
 	s.lookupListener, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.lookupPort))
 	if err != nil {
-		s.l1Listener.Close()
+		if closeErr := s.l1Listener.Close(); closeErr != nil {
+			log.Printf("error closing L1 listener during cleanup: %v", closeErr)
+		}
 		return fmt.Errorf("failed to start Lookup listener: %w", err)
 	}
 	log.Printf("Mock IQFeed Lookup listening on %s", s.lookupListener.Addr())
@@ -110,23 +112,55 @@ func (s *MockIQFeedServer) Stop() {
 	close(s.stopChan)
 
 	if s.l1Listener != nil {
-		s.l1Listener.Close()
+		if err := s.l1Listener.Close(); err != nil {
+			log.Printf("error closing L1 listener: %v", err)
+		}
 	}
 	if s.lookupListener != nil {
-		s.lookupListener.Close()
+		if err := s.lookupListener.Close(); err != nil {
+			log.Printf("error closing lookup listener: %v", err)
+		}
 	}
 
 	s.connMu.Lock()
 	for _, conn := range s.l1Conns {
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			log.Printf("error closing L1 connection: %v", err)
+		}
 	}
 	for _, conn := range s.lookupConns {
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			log.Printf("error closing lookup connection: %v", err)
+		}
 	}
 	s.connMu.Unlock()
 
 	s.wg.Wait()
 	log.Println("Mock IQFeed server stopped")
+}
+
+// removeL1Conn removes a connection from the L1 connections slice
+func (s *MockIQFeedServer) removeL1Conn(conn net.Conn) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	for i, c := range s.l1Conns {
+		if c == conn {
+			s.l1Conns = append(s.l1Conns[:i], s.l1Conns[i+1:]...)
+			return
+		}
+	}
+}
+
+// removeLookupConn removes a connection from the lookup connections slice
+func (s *MockIQFeedServer) removeLookupConn(conn net.Conn) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	for i, c := range s.lookupConns {
+		if c == conn {
+			s.lookupConns = append(s.lookupConns[:i], s.lookupConns[i+1:]...)
+			return
+		}
+	}
 }
 
 func (s *MockIQFeedServer) acceptL1Connections() {
@@ -183,7 +217,12 @@ func (s *MockIQFeedServer) acceptLookupConnections() {
 
 func (s *MockIQFeedServer) handleL1Connection(conn net.Conn) {
 	defer s.wg.Done()
-	defer conn.Close()
+	defer func() {
+		s.removeL1Conn(conn)
+		if err := conn.Close(); err != nil {
+			log.Printf("error closing L1 connection: %v", err)
+		}
+	}()
 
 	log.Printf("L1 client connected: %s", conn.RemoteAddr())
 
@@ -244,6 +283,7 @@ func (s *MockIQFeedServer) handleL1Command(conn net.Conn, cmd string) error {
 		}
 
 		// Start sending periodic timestamps
+		s.wg.Add(1)
 		go s.sendTimestamps(conn)
 
 	} else if strings.HasPrefix(cmd, "w") {
@@ -268,6 +308,7 @@ func (s *MockIQFeedServer) handleL1Command(conn net.Conn, cmd string) error {
 		}
 
 		// Start sending updates
+		s.wg.Add(1)
 		go s.sendUpdates(conn, symbol)
 
 	} else if strings.HasPrefix(cmd, "r") {
@@ -293,7 +334,12 @@ func (s *MockIQFeedServer) handleL1Command(conn net.Conn, cmd string) error {
 
 func (s *MockIQFeedServer) handleLookupConnection(conn net.Conn) {
 	defer s.wg.Done()
-	defer conn.Close()
+	defer func() {
+		s.removeLookupConn(conn)
+		if err := conn.Close(); err != nil {
+			log.Printf("error closing lookup connection: %v", err)
+		}
+	}()
 
 	log.Printf("Lookup client connected: %s", conn.RemoteAddr())
 
@@ -459,6 +505,8 @@ func (s *MockIQFeedServer) sendSummary(conn net.Conn, symbol string) error {
 }
 
 func (s *MockIQFeedServer) sendUpdates(conn net.Conn, symbol string) {
+	defer s.wg.Done()
+
 	// Send periodic quote updates while symbol is watched
 	// Maximum 60 seconds of updates to prevent hanging forever
 	ticker := time.NewTicker(1 * time.Second)
@@ -513,12 +561,6 @@ func (s *MockIQFeedServer) sendUpdates(conn net.Conn, symbol string) {
 			fields[16] = "148.00"                        // Prev Close
 			fields[28] = "149.75"                        // Open
 
-			for i := 12; i < 50; i++ {
-				if fields[i] == "" {
-					fields[i] = ""
-				}
-			}
-
 			msg := strings.Join(fields, ",") + "\r\n"
 			if err := s.send(conn, msg); err != nil {
 				// Connection closed or error, stop sending
@@ -529,6 +571,8 @@ func (s *MockIQFeedServer) sendUpdates(conn net.Conn, symbol string) {
 }
 
 func (s *MockIQFeedServer) sendTimestamps(conn net.Conn) {
+	defer s.wg.Done()
+
 	// Send periodic timestamp heartbeats
 	// Maximum 60 seconds to prevent hanging forever
 	ticker := time.NewTicker(5 * time.Second)
@@ -559,10 +603,7 @@ func (s *MockIQFeedServer) send(conn net.Conn, msg string) error {
 		return err
 	}
 	_, err := conn.Write([]byte(msg))
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 func main() {
