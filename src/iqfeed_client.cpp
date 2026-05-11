@@ -198,7 +198,27 @@ Result<void> IQFeedClient::connect() {
     // Note: read_data() already uses poll() with timeout, so we don't need extra sleep
     {
         auto start = std::chrono::steady_clock::now();
+        int spin_count = 0;
+        auto last_spin_check = start;
+
         while (!protocol_validated_) {
+            // BUSY-WAIT DETECTOR: If we loop >50 times in <100ms, poll() isn't blocking
+            // Each iteration should take ~POLL_TIMEOUT_MS (10ms), so 50 iterations = ~500ms minimum
+            ++spin_count;
+            if (spin_count > 50) {
+                auto now = std::chrono::steady_clock::now();
+                auto spin_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_spin_check).count();
+                if (spin_elapsed < 100) {
+                    // We did 50+ iterations in <100ms - that's <2ms per iteration, poll() should block for 10ms
+                    std::fprintf(stderr, "FATAL: Busy-wait detected in protocol validation loop "
+                                        "(%d iterations in %lld ms)\n", spin_count, static_cast<long long>(spin_elapsed));
+                    std::abort();
+                }
+                // Reset counter for next check window
+                spin_count = 0;
+                last_spin_check = now;
+            }
+
             // read_data() blocks in poll() for up to POLL_TIMEOUT_MS - no busy wait
             if (!read_data()) {
                 // Check if an error occurred (state would be set to Error or Disconnected)
@@ -294,8 +314,26 @@ Result<void> IQFeedClient::connect() {
     // Wait for lookup port protocol validation
     {
         auto start = std::chrono::steady_clock::now();
+        int spin_count = 0;
+        auto last_spin_check = start;
+
         while (!lookup_protocol_validated_) {
+            // BUSY-WAIT DETECTOR: If we loop >50 times in <100ms, poll() isn't blocking
+            ++spin_count;
+            if (spin_count > 50) {
+                auto now = std::chrono::steady_clock::now();
+                auto spin_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_spin_check).count();
+                if (spin_elapsed < 100) {
+                    std::fprintf(stderr, "FATAL: Busy-wait detected in lookup protocol validation loop "
+                                        "(%d iterations in %lld ms)\n", spin_count, static_cast<long long>(spin_elapsed));
+                    std::abort();
+                }
+                spin_count = 0;
+                last_spin_check = now;
+            }
+
             // Read and parse lookup data to get protocol response
+            // poll() blocks for up to POLL_TIMEOUT_MS - no additional sleep needed
             if (lookup_fd_ >= 0) {
                 struct pollfd pfd{};
                 pfd.fd = lookup_fd_;
@@ -336,8 +374,7 @@ Result<void> IQFeedClient::connect() {
                 state_ = ConnectionState::Error;
                 return Result<void>::failure(last_error_);
             }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            // No sleep needed - poll() already provides wait
         }
         log_verbose("Lookup port protocol validated");
     }
