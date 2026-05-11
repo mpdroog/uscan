@@ -133,4 +133,23 @@ private:
     Mutex& mu_;
 };
 
+// RAII lock guard that works with condition_variable AND has thread safety annotations
+// Use this when you need to call cond_.wait() - it wraps std::unique_lock internally
+class SCOPED_CAPABILITY UniqueMutexLock {
+public:
+    explicit UniqueMutexLock(Mutex& mu) ACQUIRE(mu)
+        : lock_(mu.native()) {}
+    ~UniqueMutexLock() RELEASE() {}
+
+    // For condition_variable::wait(lock.native())
+    std::unique_lock<std::mutex>& native() { return lock_; }
+
+    // Non-copyable, non-movable
+    UniqueMutexLock(const UniqueMutexLock&) = delete;
+    UniqueMutexLock& operator=(const UniqueMutexLock&) = delete;
+
+private:
+    std::unique_lock<std::mutex> lock_;
+};
+
 } // namespace uscan

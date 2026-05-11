@@ -5,7 +5,6 @@
 #include <thread>
 #include <vector>
 #include <condition_variable>
-#include <atomic>
 #include <functional>
 
 namespace uscan {
@@ -47,15 +46,16 @@ private:
         std::function<void()> flush_callback;
     };
 
-    void worker_loop() NO_THREAD_SAFETY_ANALYSIS;
+    void worker_loop();
     void process_request(const Request& req);
 
     SymbolDB& db_;
-    std::thread worker_;
-    std::vector<Request> requests_ GUARDED_BY(mutex_);
+    // IMPORTANT: These must be declared before worker_ so they are initialized first
     Mutex mutex_;
     std::condition_variable cond_;
-    std::atomic<bool> running_{true};
+    std::vector<Request> requests_ GUARDED_BY(mutex_);
+    bool running_ GUARDED_BY(mutex_) = true;
+    std::thread worker_;  // Must be last - starts thread that uses above members
 };
 
 } // namespace uscan

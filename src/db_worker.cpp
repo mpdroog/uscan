@@ -54,11 +54,9 @@ void DBWorker::enqueue_flush(std::function<void()> callback) {
 }
 
 void DBWorker::stop() {
-    running_ = false;
-
     {
-        MutexLock lock(mutex_);
-        // Wake up worker thread
+        UniqueMutexLock lock(mutex_);
+        running_ = false;
     }
     cond_.notify_one();
 
@@ -73,10 +71,10 @@ void DBWorker::worker_loop() {
         bool has_request = false;
 
         {
-            std::unique_lock<std::mutex> lock(mutex_.native());
+            UniqueMutexLock lock(mutex_);
             // Wait for work or shutdown signal
             while (requests_.empty() && running_) {
-                cond_.wait(lock);
+                cond_.wait(lock.native());
             }
 
             // Only exit when stopped AND queue is empty (drain all pending work)
