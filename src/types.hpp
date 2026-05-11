@@ -220,6 +220,41 @@ struct Gapper {
     }
 };
 
+// Regional quote from Level 1 regional updates (R messages)
+struct RegionalQuote {
+    std::string symbol;
+    std::string exchange;
+    double bid{0.0};
+    double ask{0.0};
+    double last{0.0};
+    int64_t bid_size{0};
+    int64_t ask_size{0};
+
+    RegionalQuote() = default;
+};
+
+// Trade correction message (C messages)
+struct TradeCorrection {
+    std::string symbol;
+    char correction_type{'D'};  // D=Delete, A=Insert, X=TradeDelete, I=TradeInsert
+    double price{0.0};
+    int64_t size{0};
+    std::string trade_id;
+
+    TradeCorrection() = default;
+};
+
+// News headline message (N messages)
+struct NewsHeadline {
+    std::string headline_id;
+    std::string source;
+    std::string symbols;  // Colon-separated symbol list
+    std::string headline;
+    std::string timestamp;
+
+    NewsHeadline() = default;
+};
+
 // Connection state
 enum class ConnectionState : uint8_t {
     Disconnected = 0,

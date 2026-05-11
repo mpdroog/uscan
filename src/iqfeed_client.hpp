@@ -15,6 +15,10 @@ namespace uscan {
 // Callback types
 using QuoteCallback = std::function<void(const Quote&)>;
 using SymbolListCallback = std::function<void(const std::vector<SymbolInfo>&)>;
+using RegionalQuoteCallback = std::function<void(const RegionalQuote&)>;
+using TradeCorrectionCallback = std::function<void(const TradeCorrection&)>;
+using NewsCallback = std::function<void(const NewsHeadline&)>;
+using SymbolLimitCallback = std::function<void(const std::string&)>;
 
 // IQFeed Level 1 TCP client
 class IQFeedClient final {
@@ -46,6 +50,12 @@ public:
     // Set callback for quote updates
     void set_quote_callback(QuoteCallback cb);
 
+    // Set callbacks for additional message types
+    void set_regional_quote_callback(RegionalQuoteCallback cb);
+    void set_trade_correction_callback(TradeCorrectionCallback cb);
+    void set_news_callback(NewsCallback cb);
+    void set_symbol_limit_callback(SymbolLimitCallback cb);
+
     // Get current quotes
     USCAN_NODISCARD const std::unordered_map<std::string, Quote>& quotes() const noexcept;
 
@@ -68,6 +78,12 @@ private:
     void parse_summary(const std::vector<std::string>& fields);
     void parse_update(const std::vector<std::string>& fields);
     void parse_system(const std::vector<std::string>& fields);
+    void parse_regional(const std::vector<std::string>& fields);
+    void parse_correction(const std::vector<std::string>& fields);
+    void parse_news(const std::vector<std::string>& fields);
+
+    // Dynamic field index lookup (returns fallback if field not in map)
+    std::size_t get_field_index(const char* field_name, std::size_t fallback) const;
 
     // Utility
     static std::vector<std::string> split(const std::string& s, char delim);
@@ -91,7 +107,20 @@ private:
     std::mutex quotes_mutex_;
 
     QuoteCallback quote_callback_;
+    RegionalQuoteCallback regional_quote_callback_;
+    TradeCorrectionCallback trade_correction_callback_;
+    NewsCallback news_callback_;
+    SymbolLimitCallback symbol_limit_callback_;
     std::atomic<std::size_t> message_count_{0};
+
+    // Dynamic field mapping - populated from S,CURRENT UPDATE FIELDNAMES
+    std::unordered_map<std::string, std::size_t> field_index_map_;
+    mutable std::mutex field_map_mutex_;
+    std::atomic<bool> field_map_initialized_{false};
+
+    // Protocol state
+    std::string protocol_version_;
+    std::atomic<bool> protocol_validated_{false};
 
     // SBF (Symbol By Filter) search state - thread-safe
     Mutex callback_mutex_;  // Protects callbacks from being cleared during invocation

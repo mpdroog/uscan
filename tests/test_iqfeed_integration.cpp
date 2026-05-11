@@ -834,6 +834,185 @@ TEST(Integration_gap_calculation) {
 }
 
 // ============================================================================
+// New Message Type Tests (R, C, N)
+// ============================================================================
+
+TEST(Integration_regional_quote_callback) {
+    if (!start_mock_server()) {
+        return false;
+    }
+
+    Config config;
+    config.iqfeed_host = "127.0.0.1";
+    config.iqfeed_l1_port = static_cast<uint16_t>(get_l1_port());
+    config.iqfeed_hist_port = static_cast<uint16_t>(get_lookup_port());
+
+    IQFeedClient client(config);
+
+    bool got_regional = false;
+    RegionalQuote received_quote;
+
+    client.set_regional_quote_callback([&](const RegionalQuote& rq) {
+        got_regional = true;
+        received_quote = rq;
+    });
+
+    auto result = client.connect();
+    ASSERT_TRUE(result.ok());
+
+    wait_for([&]() {
+        client.process();
+        return client.state() == ConnectionState::Connected;
+    });
+
+    // Watch special test symbol that triggers regional quote
+    result = client.watch("TEST_REGIONAL");
+    ASSERT_TRUE(result.ok());
+
+    // Wait for regional quote callback
+    bool completed = wait_for([&]() {
+        client.process();
+        return got_regional;
+    });
+
+    ASSERT_TRUE(completed);
+    ASSERT_STR_EQ(received_quote.symbol.c_str(), "TEST");
+    ASSERT_STR_EQ(received_quote.exchange.c_str(), "NYSE");
+    ASSERT_NEAR(received_quote.bid, 100.50, 0.01);
+    ASSERT_NEAR(received_quote.ask, 100.55, 0.01);
+    ASSERT_EQ(received_quote.bid_size, 500);
+    ASSERT_EQ(received_quote.ask_size, 600);
+    ASSERT_NEAR(received_quote.last, 100.52, 0.01);
+
+    client.disconnect();
+    stop_mock_server();
+    return true;
+}
+
+TEST(Integration_trade_correction_callback) {
+    if (!start_mock_server()) {
+        return false;
+    }
+
+    Config config;
+    config.iqfeed_host = "127.0.0.1";
+    config.iqfeed_l1_port = static_cast<uint16_t>(get_l1_port());
+    config.iqfeed_hist_port = static_cast<uint16_t>(get_lookup_port());
+
+    IQFeedClient client(config);
+
+    bool got_correction = false;
+    TradeCorrection received_correction;
+
+    client.set_trade_correction_callback([&](const TradeCorrection& tc) {
+        got_correction = true;
+        received_correction = tc;
+    });
+
+    auto result = client.connect();
+    ASSERT_TRUE(result.ok());
+
+    wait_for([&]() {
+        client.process();
+        return client.state() == ConnectionState::Connected;
+    });
+
+    // Watch special test symbol that triggers trade correction
+    result = client.watch("TEST_CORRECTION");
+    ASSERT_TRUE(result.ok());
+
+    // Wait for correction callback
+    bool completed = wait_for([&]() {
+        client.process();
+        return got_correction;
+    });
+
+    ASSERT_TRUE(completed);
+    ASSERT_STR_EQ(received_correction.symbol.c_str(), "TEST");
+    ASSERT_EQ(received_correction.correction_type, 'D');
+    ASSERT_NEAR(received_correction.price, 100.50, 0.01);
+    ASSERT_EQ(received_correction.size, 1000);
+    ASSERT_STR_EQ(received_correction.trade_id.c_str(), "TRADE123");
+
+    client.disconnect();
+    stop_mock_server();
+    return true;
+}
+
+TEST(Integration_news_callback) {
+    if (!start_mock_server()) {
+        return false;
+    }
+
+    Config config;
+    config.iqfeed_host = "127.0.0.1";
+    config.iqfeed_l1_port = static_cast<uint16_t>(get_l1_port());
+    config.iqfeed_hist_port = static_cast<uint16_t>(get_lookup_port());
+
+    IQFeedClient client(config);
+
+    bool got_news = false;
+    NewsHeadline received_news;
+
+    client.set_news_callback([&](const NewsHeadline& nh) {
+        got_news = true;
+        received_news = nh;
+    });
+
+    auto result = client.connect();
+    ASSERT_TRUE(result.ok());
+
+    wait_for([&]() {
+        client.process();
+        return client.state() == ConnectionState::Connected;
+    });
+
+    // Watch special test symbol that triggers news headline
+    result = client.watch("TEST_NEWS");
+    ASSERT_TRUE(result.ok());
+
+    // Wait for news callback
+    bool completed = wait_for([&]() {
+        client.process();
+        return got_news;
+    });
+
+    ASSERT_TRUE(completed);
+    ASSERT_STR_EQ(received_news.headline_id.c_str(), "12345");
+    ASSERT_STR_EQ(received_news.source.c_str(), "Reuters");
+    ASSERT_STR_EQ(received_news.symbols.c_str(), "AAPL:MSFT");
+    ASSERT_TRUE(received_news.headline.find("Tech stocks") != std::string::npos);
+
+    client.disconnect();
+    stop_mock_server();
+    return true;
+}
+
+TEST(Integration_protocol_validation) {
+    // Protocol validation is tested implicitly by all connect tests
+    // This test verifies that connect() properly waits for S,CURRENT PROTOCOL
+    if (!start_mock_server()) {
+        return false;
+    }
+
+    Config config;
+    config.iqfeed_host = "127.0.0.1";
+    config.iqfeed_l1_port = static_cast<uint16_t>(get_l1_port());
+    config.iqfeed_hist_port = static_cast<uint16_t>(get_lookup_port());
+
+    IQFeedClient client(config);
+
+    auto result = client.connect();
+    // connect() should succeed, which means protocol was validated
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(client.state(), ConnectionState::Connected);
+
+    client.disconnect();
+    stop_mock_server();
+    return true;
+}
+
+// ============================================================================
 // Cleanup
 // ============================================================================
 

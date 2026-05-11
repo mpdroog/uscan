@@ -189,10 +189,11 @@ TEST(ConnectionState_all_values) {
 
 TEST(ScannerState_all_values) {
     ASSERT_EQ(static_cast<uint8_t>(ScannerState::Idle), 0);
-    ASSERT_EQ(static_cast<uint8_t>(ScannerState::LoadingSymbols), 1);
-    ASSERT_EQ(static_cast<uint8_t>(ScannerState::Subscribing), 2);
-    ASSERT_EQ(static_cast<uint8_t>(ScannerState::Scanning), 3);
-    ASSERT_EQ(static_cast<uint8_t>(ScannerState::Error), 4);
+    ASSERT_EQ(static_cast<uint8_t>(ScannerState::Connecting), 1);
+    ASSERT_EQ(static_cast<uint8_t>(ScannerState::LoadingSymbols), 2);
+    ASSERT_EQ(static_cast<uint8_t>(ScannerState::Subscribing), 3);
+    ASSERT_EQ(static_cast<uint8_t>(ScannerState::Scanning), 4);
+    ASSERT_EQ(static_cast<uint8_t>(ScannerState::Error), 5);
     return true;
 }
 

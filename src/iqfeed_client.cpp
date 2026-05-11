@@ -23,7 +23,21 @@ constexpr int RECV_BUFFER_SIZE = 65536;
 constexpr int POLL_TIMEOUT_MS = 10;
 constexpr int CONNECT_TIMEOUT_MS = 5000;  // 5 second connection timeout
 constexpr int SYMBOL_SEARCH_TIMEOUT_MS = 60000;  // 60 second symbol search timeout
+constexpr int PROTOCOL_TIMEOUT_MS = 5000;  // 5 second protocol validation timeout
 constexpr const char* PROTOCOL_CMD = "S,SET PROTOCOL,6.2\r\n";
+
+// IQFeed field names (from Level 1 documentation)
+// These are used to build dynamic field index mappings from S,CURRENT UPDATE FIELDNAMES
+constexpr const char* FIELD_BID = "Bid";
+constexpr const char* FIELD_ASK = "Ask";
+constexpr const char* FIELD_LAST = "Most Recent Trade";
+constexpr const char* FIELD_TOTAL_VOLUME = "Total Volume";
+constexpr const char* FIELD_HIGH = "High";
+constexpr const char* FIELD_LOW = "Low";
+constexpr const char* FIELD_CLOSE = "Close";
+constexpr const char* FIELD_OPEN = "Open";
+constexpr const char* FIELD_EXTENDED_TRADE = "Extended Trade";
+constexpr const char* FIELD_EXTENDED_TRADE_SIZE = "Extended Trade Size";
 
 // Helper: perform connect with timeout using non-blocking socket
 USCAN_NODISCARD bool connect_with_timeout(int fd, const sockaddr* addr, socklen_t len, int timeout_ms) noexcept {
@@ -178,6 +192,34 @@ Result<void> IQFeedClient::connect() {
     if (!send_command(PROTOCOL_CMD)) {
         disconnect();
         return Result<void>::failure(last_error_);
+    }
+
+    // Wait for protocol validation from server
+    {
+        auto start = std::chrono::steady_clock::now();
+        while (!protocol_validated_) {
+            if (!read_data()) {
+                // read_data() returns false if no data available or on error
+                // Check if an error occurred (state would be set to Error or Disconnected)
+                if (state_ == ConnectionState::Error || state_ == ConnectionState::Disconnected) {
+                    log_warn("Connection lost while waiting for protocol validation");
+                    disconnect();
+                    return Result<void>::failure(last_error_.empty() ? "Connection lost during protocol validation" : last_error_);
+                }
+                // No data yet, continue waiting
+            }
+
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start).count();
+            if (elapsed > PROTOCOL_TIMEOUT_MS) {
+                last_error_ = "Protocol validation timeout - no response from server";
+                disconnect();
+                return Result<void>::failure(last_error_);
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        log_verbose("Protocol validated: %s", protocol_version_.c_str());
     }
 
     // Connect to Lookup port (9100) for symbol search
@@ -406,6 +448,22 @@ void IQFeedClient::process() {
 
 void IQFeedClient::set_quote_callback(QuoteCallback cb) {
     quote_callback_ = std::move(cb);
+}
+
+void IQFeedClient::set_regional_quote_callback(RegionalQuoteCallback cb) {
+    regional_quote_callback_ = std::move(cb);
+}
+
+void IQFeedClient::set_trade_correction_callback(TradeCorrectionCallback cb) {
+    trade_correction_callback_ = std::move(cb);
+}
+
+void IQFeedClient::set_news_callback(NewsCallback cb) {
+    news_callback_ = std::move(cb);
+}
+
+void IQFeedClient::set_symbol_limit_callback(SymbolLimitCallback cb) {
+    symbol_limit_callback_ = std::move(cb);
 }
 
 const std::unordered_map<std::string, Quote>& IQFeedClient::quotes() const noexcept {
@@ -660,6 +718,15 @@ void IQFeedClient::parse_message(const std::string& line) {
         case 'S':
             parse_system(fields);
             break;
+        case 'R':  // Regional quote
+            parse_regional(fields);
+            break;
+        case 'C':  // Trade correction
+            parse_correction(fields);
+            break;
+        case 'N':  // News headline
+            parse_news(fields);
+            break;
         case 'n':  // Symbol not found
             if (fields.size() > 1) {
                 log_verbose("Symbol not found: %s", fields[1].c_str());
@@ -710,7 +777,7 @@ void IQFeedClient::parse_fundamental(const std::vector<std::string>& fields) {
 }
 
 void IQFeedClient::parse_summary(const std::vector<std::string>& fields) {
-    if (fields.size() < 20) return;
+    if (fields.size() < 3) return;  // At minimum: MsgType, Symbol, and some data
 
     const std::string& symbol = fields[1];
 
@@ -720,35 +787,55 @@ void IQFeedClient::parse_summary(const std::vector<std::string>& fields) {
 
     Quote& q = it->second;
 
-    if (fields.size() > static_cast<std::size_t>(QuoteField::Bid)) {
-        q.bid = parse_double(fields[static_cast<std::size_t>(QuoteField::Bid)]);
+    // Use dynamic field indices with fallbacks to hardcoded defaults
+    // The fieldnames message tells us field positions starting from Symbol=0.
+    // In P/Q messages: MsgType is at [0], Symbol is at [1], so we add 1 to convert
+    // fieldname index to actual message index.
+    // Fallback values are for when field map isn't initialized - they're the
+    // position in the default IQFeed format minus 1 (since we add 1 below).
+    const std::size_t base = 1;  // fieldnames[0]=Symbol corresponds to message[1]
+
+    // Get dynamic indices (with hardcoded fallbacks for default IQFeed format)
+    const std::size_t idx_bid = get_field_index(FIELD_BID, 2) + base;             // default: 3
+    const std::size_t idx_ask = get_field_index(FIELD_ASK, 3) + base;             // default: 4
+    const std::size_t idx_last = get_field_index(FIELD_LAST, 6) + base;           // default: 7
+    const std::size_t idx_volume = get_field_index(FIELD_TOTAL_VOLUME, 10) + base; // default: 11
+    const std::size_t idx_high = get_field_index(FIELD_HIGH, 13) + base;          // default: 14
+    const std::size_t idx_low = get_field_index(FIELD_LOW, 14) + base;            // default: 15
+    const std::size_t idx_close = get_field_index(FIELD_CLOSE, 15) + base;        // default: 16
+    const std::size_t idx_open = get_field_index(FIELD_OPEN, 27) + base;          // default: 28
+    const std::size_t idx_ext = get_field_index(FIELD_EXTENDED_TRADE, 41) + base;      // default: 42
+    const std::size_t idx_ext_size = get_field_index(FIELD_EXTENDED_TRADE_SIZE, 42) + base; // default: 43
+
+    if (fields.size() > idx_bid && !fields[idx_bid].empty()) {
+        q.bid = parse_double(fields[idx_bid]);
     }
-    if (fields.size() > static_cast<std::size_t>(QuoteField::Ask)) {
-        q.ask = parse_double(fields[static_cast<std::size_t>(QuoteField::Ask)]);
+    if (fields.size() > idx_ask && !fields[idx_ask].empty()) {
+        q.ask = parse_double(fields[idx_ask]);
     }
-    if (fields.size() > static_cast<std::size_t>(QuoteField::Last)) {
-        q.last_price = parse_double(fields[static_cast<std::size_t>(QuoteField::Last)]);
+    if (fields.size() > idx_last && !fields[idx_last].empty()) {
+        q.last_price = parse_double(fields[idx_last]);
     }
-    if (fields.size() > static_cast<std::size_t>(QuoteField::TotalVolume)) {
-        q.volume = parse_int64(fields[static_cast<std::size_t>(QuoteField::TotalVolume)]);
+    if (fields.size() > idx_volume && !fields[idx_volume].empty()) {
+        q.volume = parse_int64(fields[idx_volume]);
     }
-    if (fields.size() > static_cast<std::size_t>(QuoteField::High)) {
-        q.high = parse_double(fields[static_cast<std::size_t>(QuoteField::High)]);
+    if (fields.size() > idx_high && !fields[idx_high].empty()) {
+        q.high = parse_double(fields[idx_high]);
     }
-    if (fields.size() > static_cast<std::size_t>(QuoteField::Low)) {
-        q.low = parse_double(fields[static_cast<std::size_t>(QuoteField::Low)]);
+    if (fields.size() > idx_low && !fields[idx_low].empty()) {
+        q.low = parse_double(fields[idx_low]);
     }
-    if (fields.size() > static_cast<std::size_t>(QuoteField::Close)) {
-        q.prev_close = parse_double(fields[static_cast<std::size_t>(QuoteField::Close)]);
+    if (fields.size() > idx_close && !fields[idx_close].empty()) {
+        q.prev_close = parse_double(fields[idx_close]);
     }
-    if (fields.size() > static_cast<std::size_t>(QuoteField::Open)) {
-        q.open = parse_double(fields[static_cast<std::size_t>(QuoteField::Open)]);
+    if (fields.size() > idx_open && !fields[idx_open].empty()) {
+        q.open = parse_double(fields[idx_open]);
     }
-    if (fields.size() > static_cast<std::size_t>(QuoteField::ExtendedTrade)) {
-        q.extended_price = parse_double(fields[static_cast<std::size_t>(QuoteField::ExtendedTrade)]);
+    if (fields.size() > idx_ext && !fields[idx_ext].empty()) {
+        q.extended_price = parse_double(fields[idx_ext]);
     }
-    if (fields.size() > static_cast<std::size_t>(QuoteField::ExtendedTradeSize)) {
-        q.extended_volume = parse_int64(fields[static_cast<std::size_t>(QuoteField::ExtendedTradeSize)]);
+    if (fields.size() > idx_ext_size && !fields[idx_ext_size].empty()) {
+        q.extended_volume = parse_int64(fields[idx_ext_size]);
     }
 
     q.last_update = std::chrono::system_clock::now();
@@ -764,11 +851,112 @@ void IQFeedClient::parse_update(const std::vector<std::string>& fields) {
 }
 
 void IQFeedClient::parse_system(const std::vector<std::string>& fields) {
-    // System messages: S,CURRENT UPDATE FIELDNAMES,...
-    // Or: S,SERVER CONNECTED
-    // Just log for now
-    USCAN_MAYBE_UNUSED const auto& msg = fields;
-    (void)msg;
+    if (fields.size() < 2) return;
+
+    const std::string& msg_type = fields[1];
+
+    // Protocol confirmation: S,CURRENT PROTOCOL,6.2
+    if (msg_type.rfind("CURRENT PROTOCOL", 0) == 0) {
+        if (fields.size() >= 3) {
+            protocol_version_ = fields[2];
+            protocol_validated_ = true;
+            log_verbose("Protocol confirmed: %s", protocol_version_.c_str());
+        }
+        return;
+    }
+
+    // Dynamic field mapping: S,CURRENT UPDATE FIELDNAMES,Symbol,Bid,Ask,...
+    if (msg_type == "CURRENT UPDATE FIELDNAMES") {
+        std::lock_guard<std::mutex> lock(field_map_mutex_);
+        field_index_map_.clear();
+        // Fields start at index 2 (after "S" and "CURRENT UPDATE FIELDNAMES")
+        // Note: Symbol is always field 0 in the actual message, but here we map
+        // the remaining fields to their indices in the data portion
+        for (std::size_t i = 2; i < fields.size(); ++i) {
+            if (!fields[i].empty()) {
+                field_index_map_[fields[i]] = i - 2;
+            }
+        }
+        field_map_initialized_ = true;
+        log_verbose("Field map initialized with %zu fields", field_index_map_.size());
+        return;
+    }
+
+    // Server connection state
+    if (msg_type == "SERVER CONNECTED") {
+        log_verbose("IQFeed server connected");
+        return;
+    }
+
+    if (msg_type == "SERVER DISCONNECTED") {
+        log_warn("IQFeed server disconnected");
+        state_ = ConnectionState::Disconnected;
+        return;
+    }
+
+    // Symbol limit warning
+    if (msg_type == "SYMBOL LIMIT REACHED") {
+        const std::string symbol = fields.size() > 2 ? fields[2] : "unknown";
+        log_warn("Symbol limit reached for: %s", symbol.c_str());
+        if (symbol_limit_callback_) {
+            symbol_limit_callback_(symbol);
+        }
+        return;
+    }
+
+    // Other system messages (KEY, CUST, STATS, etc.) - just log
+    log_verbose("System message: %s", msg_type.c_str());
+}
+
+void IQFeedClient::parse_regional(const std::vector<std::string>& fields) {
+    // Regional quote format: R,Symbol,Exchange,Bid,Ask,BidSize,AskSize,Last,...
+    if (fields.size() < 5) return;
+
+    RegionalQuote rq;
+    rq.symbol = fields[1];
+    rq.exchange = fields[2];
+    rq.bid = parse_double(fields[3]);
+    rq.ask = parse_double(fields[4]);
+    if (fields.size() > 5) rq.bid_size = parse_int64(fields[5]);
+    if (fields.size() > 6) rq.ask_size = parse_int64(fields[6]);
+    if (fields.size() > 7) rq.last = parse_double(fields[7]);
+
+    if (regional_quote_callback_) {
+        regional_quote_callback_(rq);
+    }
+}
+
+void IQFeedClient::parse_correction(const std::vector<std::string>& fields) {
+    // Trade correction format: C,Symbol,CorrectionType,Price,Size,TradeID,...
+    // CorrectionType: D=Delete, A=Insert, X=TradeDelete, I=TradeInsert
+    if (fields.size() < 4) return;
+
+    TradeCorrection tc;
+    tc.symbol = fields[1];
+    tc.correction_type = fields[2].empty() ? 'D' : fields[2][0];
+    tc.price = parse_double(fields[3]);
+    if (fields.size() > 4) tc.size = parse_int64(fields[4]);
+    if (fields.size() > 5) tc.trade_id = fields[5];
+
+    if (trade_correction_callback_) {
+        trade_correction_callback_(tc);
+    }
+}
+
+void IQFeedClient::parse_news(const std::vector<std::string>& fields) {
+    // News headline format: N,HeadlineID,Source,Symbols,Headline,Timestamp
+    if (fields.size() < 5) return;
+
+    NewsHeadline nh;
+    nh.headline_id = fields[1];
+    nh.source = fields[2];
+    nh.symbols = fields[3];  // Colon-separated list
+    nh.headline = fields[4];
+    if (fields.size() > 5) nh.timestamp = fields[5];
+
+    if (news_callback_) {
+        news_callback_(nh);
+    }
 }
 
 // HTTP removed - using TCP SBF command instead
@@ -812,6 +1000,15 @@ int64_t IQFeedClient::parse_int64(const std::string& s) noexcept {
     }
 
     return result;
+}
+
+std::size_t IQFeedClient::get_field_index(const char* field_name, std::size_t fallback) const {
+    if (!field_map_initialized_) {
+        return fallback;
+    }
+    std::lock_guard<std::mutex> lock(field_map_mutex_);
+    auto it = field_index_map_.find(field_name);
+    return (it != field_index_map_.end()) ? it->second : fallback;
 }
 
 void IQFeedClient::parse_lookup_message(const std::string& line) {

@@ -278,7 +278,17 @@ func (s *MockIQFeedServer) handleL1Command(conn net.Conn, cmd string) error {
 		if err := s.send(conn, "S,CUST,mock_server,127.0.0.1,5009,0,0,0,0,0,0\r\n"); err != nil {
 			return err
 		}
-		if err := s.send(conn, "S,CURRENT UPDATE FIELDNAMES,Symbol,Most Recent Trade,Size,Bid,Ask\r\n"); err != nil {
+		// Send complete fieldnames matching what the client expects
+		// These field names match IQFeed documentation and the client's dynamic field mapping
+		fieldnames := "S,CURRENT UPDATE FIELDNAMES,Symbol,Reserved," +
+			"Bid,Ask,Bid Size,Ask Size,Most Recent Trade,Most Recent Trade Size," +
+			"Reserved2,Reserved3,Total Volume,Reserved4,Reserved5," +
+			"High,Low,Close,Reserved6,Reserved7,Reserved8,Reserved9," +
+			"Reserved10,Reserved11,Reserved12,Reserved13,Reserved14,Reserved15," +
+			"Open,Reserved16,Reserved17,Reserved18,Reserved19,Reserved20," +
+			"Reserved21,Reserved22,Reserved23,Reserved24,Reserved25,Reserved26," +
+			"Reserved27,Reserved28,Reserved29,Extended Trade,Extended Trade Size\r\n"
+		if err := s.send(conn, fieldnames); err != nil {
 			return err
 		}
 
@@ -290,6 +300,29 @@ func (s *MockIQFeedServer) handleL1Command(conn net.Conn, cmd string) error {
 		// Watch symbol
 		symbol := strings.TrimPrefix(cmd, "w")
 		symbol = strings.ToUpper(strings.TrimSpace(symbol))
+
+		// Special test symbols for R/C/N messages
+		if symbol == "TEST_REGIONAL" {
+			// Send a regional quote message
+			if err := s.send(conn, "R,TEST,NYSE,100.50,100.55,500,600,100.52\r\n"); err != nil {
+				return err
+			}
+			return nil
+		}
+		if symbol == "TEST_CORRECTION" {
+			// Send a trade correction message
+			if err := s.send(conn, "C,TEST,D,100.50,1000,TRADE123\r\n"); err != nil {
+				return err
+			}
+			return nil
+		}
+		if symbol == "TEST_NEWS" {
+			// Send a news headline message
+			if err := s.send(conn, "N,12345,Reuters,AAPL:MSFT,Tech stocks rise on earnings,2024-01-15 09:30:00\r\n"); err != nil {
+				return err
+			}
+			return nil
+		}
 
 		s.watchMu.Lock()
 		if watchMap, exists := s.watched[conn]; exists {
