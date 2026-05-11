@@ -14,6 +14,22 @@ import (
 	"time"
 )
 
+// Timeout and interval constants
+const (
+	readTimeout       = 30 * time.Second
+	writeTimeout      = 5 * time.Second
+	updateTimeout     = 60 * time.Second
+	updateInterval    = 1 * time.Second
+	timestampInterval = 5 * time.Second
+	symbolSendDelay   = 1 * time.Millisecond
+)
+
+// Field array sizes for IQFeed messages
+const (
+	fundamentalFieldCount = 60
+	quoteFieldCount       = 50
+)
+
 // isTimeoutError checks if an error is a network timeout
 func isTimeoutError(err error) bool {
 	if err == nil {
@@ -56,18 +72,6 @@ type SymbolData struct {
 	Name     string
 	Exchange string
 	Type     int // 1=equity, 2=index, etc
-}
-
-// safeSetField sets a field in a slice, growing it if necessary
-func safeSetField(fields []string, index int, value string) []string {
-	if index >= len(fields) {
-		// Grow the slice to accommodate the index
-		newFields := make([]string, index+1)
-		copy(newFields, fields)
-		fields = newFields
-	}
-	fields[index] = value
-	return fields
 }
 
 // NewMockIQFeedServer creates a new mock server
@@ -261,7 +265,7 @@ func (s *MockIQFeedServer) handleL1Connection(conn net.Conn) {
 	scanner := bufio.NewScanner(conn)
 	for {
 		// Set read deadline to prevent hanging forever if client stops sending
-		if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
 			log.Printf("L1 SetReadDeadline error: %v", err)
 			break
 		}
@@ -352,8 +356,9 @@ func (s *MockIQFeedServer) handleL1Command(conn net.Conn, cmd string) error {
 			return nil
 		}
 		if symbol == "TEST_NEWS" {
-			// Send a news headline message
-			if err := s.send(conn, "N,12345,Reuters,AAPL:MSFT,Tech stocks rise on earnings,2024-01-15 09:30:00\r\n"); err != nil {
+			// Send a news headline message with current timestamp
+			newsTime := time.Now().Format("2006-01-02 15:04:05")
+			if err := s.send(conn, fmt.Sprintf("N,12345,Reuters,AAPL:MSFT,Tech stocks rise on earnings,%s\r\n", newsTime)); err != nil {
 				return err
 			}
 			return nil
@@ -417,7 +422,7 @@ func (s *MockIQFeedServer) handleLookupConnection(conn net.Conn) {
 	scanner := bufio.NewScanner(conn)
 	for {
 		// Set read deadline to prevent hanging forever if client stops sending
-		if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
 			log.Printf("Lookup SetReadDeadline error: %v", err)
 			break
 		}
@@ -463,11 +468,12 @@ func (s *MockIQFeedServer) handleLookupCommand(conn net.Conn, cmd string) error 
 			msg := fmt.Sprintf("LS,%s,%s,%d,%s,\r\n",
 				sym.Symbol, sym.Exchange, sym.Type, sym.Name)
 			if err := s.send(conn, msg); err != nil {
+				// Connection broken - no point trying to send ENDMSG
 				return err
 			}
 
 			// Simulate realistic delay (symbols arrive fast but not instant)
-			time.Sleep(1 * time.Millisecond)
+			time.Sleep(symbolSendDelay)
 		}
 
 		// Send end marker
@@ -499,7 +505,7 @@ func (s *MockIQFeedServer) sendFundamental(conn net.Conn, symbol string) error {
 	}
 
 	// Build message with proper field indices
-	fields := make([]string, 60)
+	fields := make([]string, fundamentalFieldCount)
 	fields[0] = "F"
 	fields[1] = symbol           // Index 1: Symbol
 	fields[2] = "NASDAQ"          // Index 2: Exchange
@@ -520,7 +526,7 @@ func (s *MockIQFeedServer) sendFundamental(conn net.Conn, symbol string) error {
 	fields[52] = "16500000000"    // Index 52: Float Shares
 
 	// Fill remaining fields
-	for i := 53; i < 60; i++ {
+	for i := 53; i < fundamentalFieldCount; i++ {
 		fields[i] = ""
 	}
 
@@ -532,7 +538,7 @@ func (s *MockIQFeedServer) sendSummary(conn net.Conn, symbol string) error {
 	// P message format (Summary/Update)
 	// P,Symbol,Reserved,Bid,Ask,BidSize,AskSize,Last,LastSize,Volume,...,High,Low,Close,Open,...,ExtPrice,ExtVol,...
 
-	fields := make([]string, 50)
+	fields := make([]string, quoteFieldCount)
 	fields[0] = "P"
 	fields[1] = symbol            // Index 1: Symbol
 	fields[2] = ""                // Index 2: Reserved
@@ -567,7 +573,7 @@ func (s *MockIQFeedServer) sendSummary(conn net.Conn, symbol string) error {
 	fields[43] = "50000"          // Index 43: Extended Volume
 
 	// Fill remaining fields
-	for i := 44; i < 50; i++ {
+	for i := 44; i < quoteFieldCount; i++ {
 		fields[i] = ""
 	}
 
@@ -579,11 +585,11 @@ func (s *MockIQFeedServer) sendUpdates(conn net.Conn, symbol string, connCancel 
 	defer s.wg.Done()
 
 	// Send periodic quote updates while symbol is watched
-	// Maximum 60 seconds of updates to prevent hanging forever
-	ticker := time.NewTicker(1 * time.Second)
+	// Maximum updateTimeout of updates to prevent hanging forever
+	ticker := time.NewTicker(updateInterval)
 	defer ticker.Stop()
 
-	timeout := time.After(60 * time.Second)
+	timeout := time.After(updateTimeout)
 	price := 150.0
 	volume := 1000000
 
@@ -617,7 +623,7 @@ func (s *MockIQFeedServer) sendUpdates(conn net.Conn, symbol string, connCancel 
 			volume += 10000
 
 			// Q message (update)
-			fields := make([]string, 50)
+			fields := make([]string, quoteFieldCount)
 			fields[0] = "Q"
 			fields[1] = symbol
 			fields[2] = ""
@@ -648,11 +654,11 @@ func (s *MockIQFeedServer) sendTimestamps(conn net.Conn, connCancel <-chan struc
 	defer s.wg.Done()
 
 	// Send periodic timestamp heartbeats
-	// Maximum 60 seconds to prevent hanging forever
-	ticker := time.NewTicker(5 * time.Second)
+	// Maximum updateTimeout to prevent hanging forever
+	ticker := time.NewTicker(timestampInterval)
 	defer ticker.Stop()
 
-	timeout := time.After(60 * time.Second)
+	timeout := time.After(updateTimeout)
 
 	for {
 		select {
@@ -676,7 +682,7 @@ func (s *MockIQFeedServer) sendTimestamps(conn net.Conn, connCancel <-chan struc
 func (s *MockIQFeedServer) send(conn net.Conn, msg string) error {
 	log.Printf("SEND: %s", strings.TrimSpace(msg))
 	// Set write deadline to prevent hanging if client stops reading
-	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return err
 	}
 	_, err := conn.Write([]byte(msg))
