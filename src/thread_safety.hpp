@@ -3,6 +3,10 @@
 // Clang Thread Safety Analysis
 // Enables compile-time detection of data races and deadlocks
 // Use with: clang++ -Wthread-safety
+//
+// NOTE: NO_THREAD_SAFETY_ANALYSIS is intentionally not provided.
+// If a function cannot be annotated, fix the design instead of opting out.
+// Use UniqueMutexLock for condition_variable compatibility with annotations.
 
 #if defined(__clang__) && defined(__has_attribute)
 #if __has_attribute(capability)
@@ -25,7 +29,6 @@
   #define ASSERT_CAPABILITY(x) THREAD_ANNOTATION_ATTRIBUTE__(assert_capability(x))
   #define ASSERT_SHARED_CAPABILITY(x) THREAD_ANNOTATION_ATTRIBUTE__(assert_shared_capability(x))
   #define RETURN_CAPABILITY(x) THREAD_ANNOTATION_ATTRIBUTE__(lock_returned(x))
-  #define NO_THREAD_SAFETY_ANALYSIS THREAD_ANNOTATION_ATTRIBUTE__(no_thread_safety_analysis)
 #else
   #define CAPABILITY(x)
   #define SCOPED_CAPABILITY
@@ -45,7 +48,6 @@
   #define ASSERT_CAPABILITY(x)
   #define ASSERT_SHARED_CAPABILITY(x)
   #define RETURN_CAPABILITY(x)
-  #define NO_THREAD_SAFETY_ANALYSIS
 #endif
 #else
   #define CAPABILITY(x)
@@ -66,7 +68,6 @@
   #define ASSERT_CAPABILITY(x)
   #define ASSERT_SHARED_CAPABILITY(x)
   #define RETURN_CAPABILITY(x)
-  #define NO_THREAD_SAFETY_ANALYSIS
 #endif
 
 #include <mutex>
