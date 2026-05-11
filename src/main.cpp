@@ -1,5 +1,6 @@
 #include "types.hpp"
 #include "scanner.hpp"
+#include "thread_safety.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -13,6 +14,7 @@
 #include <cinttypes>
 #include <cstring>
 #include <algorithm>
+#include <chrono>
 
 namespace {
 
@@ -455,8 +457,13 @@ int main(int argc, char* argv[]) {
         // Continue anyway - will show error in UI
     }
 
-    // Main loop
+    // Main loop with fallback frame limiter
+    // vsync should limit to 60 FPS, but if disabled/broken we cap at ~120 FPS
+    constexpr auto MIN_FRAME_TIME = std::chrono::milliseconds(8);
+
     while (!glfwWindowShouldClose(window)) {
+        auto frame_start = std::chrono::steady_clock::now();
+
         glfwPollEvents();
 
         // Update scanner
@@ -480,6 +487,14 @@ int main(int argc, char* argv[]) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         glfwSwapBuffers(window);
+
+        // Fallback frame limiter if vsync isn't working
+        auto frame_duration = std::chrono::steady_clock::now() - frame_start;
+        auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            MIN_FRAME_TIME - frame_duration).count();
+        if (remaining_ms > 0) {
+            uscan::safe_sleep_ms(static_cast<int>(remaining_ms));
+        }
     }
 
     // Cleanup

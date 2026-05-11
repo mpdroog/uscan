@@ -1320,21 +1320,14 @@ void IQFeedClient::symbol_search_worker() {
             break;
         }
 
-        bool data_read = false;
-
         // Read in tight loop until no more data (prevents buffer overflow)
         while (searching_symbols_ && state_ == ConnectionState::Connected) {
-            if (read_lookup_data()) {
-                data_read = true;  // Keep reading
-            } else {
+            if (!read_lookup_data()) {
                 break;  // No more data available right now
             }
         }
 
-        // Brief sleep only when no data was available (avoid busy-wait)
-        if (!data_read && searching_symbols_ && state_ == ConnectionState::Connected) {
-            safe_sleep_us(100);
-        }
+        // No sleep needed - read_lookup_data() already blocks in poll() for up to POLL_TIMEOUT_MS
     }
 
     log_verbose("Symbol search worker thread exiting (searching=%d, state=%d)",
